@@ -1,0 +1,205 @@
+#include <Servo.h>
+#include <SoftwareSerial.h>
+
+Servo servoLeft;
+Servo servoRight;
+
+const int setpoint = 2;    // Output pin for a setpoint (purpose not entirely clear)
+const int kpl = -50;        // Proportional control gain for the left servo
+const int kpr = -50;        // Proportional control gain for the right servo
+int speed = 0;              // Variable representing the speed of the car (not currently used)
+
+const int threshold = 1;    // Distance threshold for obstacle detection
+
+SoftwareSerial BT(5, 6);    // SoftwareSerial communication on pins 5 (RX) and 6 (TX)
+
+void setup() {
+  pinMode(10, INPUT);        // Set pin 10 as an input
+  pinMode(9, OUTPUT);        // Set pin 9 as an output
+  pinMode(3, INPUT);         // Set pin 3 as an input
+  pinMode(2, OUTPUT);        // Set pin 2 as an output
+  pinMode(8, OUTPUT);        // Set pin 8 as an output
+  pinMode(7, OUTPUT);        // Set pin 7 as an output
+  pinMode(setpoint, OUTPUT); // Set the setpoint pin as an output
+
+  servoLeft.attach(13);      // Attach the left servo to pin 13
+  servoRight.attach(12);     // Attach the right servo to pin 12
+
+  tone(4, 3000, 1000);       // Generate a tone on pin 4 for 1 second
+  delay(1000);               // Delay for 1 second
+
+  // Bluetooth setup
+  BT.begin(9600);            // Start SoftwareSerial communication with a baud rate of 9600
+  Serial.begin(9600);        // Start Serial communication with a baud rate of 9600
+}
+
+bool shouldMoveForward = false;       // Flag to indicate whether the car should move forward
+bool shouldResumeCommands = true;     // Flag to control whether to resume Bluetooth command execution
+
+void loop() {
+  // Bluetooth control
+  if (BT.available()) {
+    char command = BT.read();
+    handleBluetoothCommand(command);
+  }
+
+  // Obstacle avoidance logic
+  int irLeft = irDistance(9, 10);    // Measure distance using the left infrared sensor
+  int irRight = irDistance(2, 3);    // Measure distance using the right infrared sensor
+
+  digitalWrite(8, !irLeft);          // Set pin 8 based on the left infrared sensor reading
+  digitalWrite(7, !irRight);         // Set pin 7 based on the right infrared sensor reading
+
+  // Light intensity measurement
+  float tRight = float(rcTime(11));   // Measure the right light intensity and convert to float
+  float ndShade = (tRight / 1000) - 0.5; // Calculate normalized differential shade
+
+  // Display heading
+  Serial.println("ndShade     tRight");
+  Serial.print(tRight);             // Display tRight value
+  Serial.print("       ");         // Display spaces
+  Serial.print(ndShade);            // Display ndShade value
+  Serial.println();                 // Add an extra newline
+  delay(500);                       // 1-second delay
+
+  if (irLeft < threshold && irRight < threshold) {
+    stopCar();
+    digitalWrite(8, LOW);
+    digitalWrite(7, LOW);
+
+    // Notify the device about the obstacle and wait for a command
+    BT.println("Obstacle detected! Send '1' to turn right, '2' to stop and exit.");
+
+    while (true) {
+      if (BT.available()) {
+        char command = BT.read();
+        handleBluetoothCommand(command);
+        break; // Exit the loop after handling the command
+      }
+    }
+  } else if (irLeft < threshold) {
+    turnSlightRight();
+    moveForward();
+  } else if (irRight < threshold) {
+    turnSlightLeft();
+    moveForward();
+  } else if(tRight < 3000){
+    stopCar();
+  } else if(tRight > 3000){
+    moveForward();
+  }
+
+  // Automatically move forward if the flag is set
+  if (shouldMoveForward) {
+    moveForward();
+    shouldMoveForward = false;     // Reset the flag after moving forward
+    shouldResumeCommands = true;   // Resume command execution
+  }
+}
+
+// Function to measure infrared distance
+int irDistance(int irLedPin, int irReceivePin) {
+  int distance = 0;
+  for (long f = 41000; f <= 42000; f += 500) {
+    distance += irDetect(irLedPin, irReceivePin, f);
+  }
+  return distance;
+}
+
+// Function to detect infrared distance at a specific frequency
+int irDetect(int irLedPin, int irReceiverPin, long frequency) {
+  tone(irLedPin, frequency, 8);
+  delay(1);
+  int ir = digitalRead(irReceiverPin);
+  delay(1);
+  return ir;
+}
+
+// Function to perform a maneuver with the servo motors
+void maneuver(int speedLeft, int speedRight, int msTime) {
+  servoLeft.writeMicroseconds(1500 + speedLeft);
+  servoRight.writeMicroseconds(1500 - speedRight);
+  if (msTime == -1) {
+    servoLeft.detach();
+    servoRight.detach();
+  }
+  delay(msTime);
+}
+
+// Function to handle Bluetooth commands
+void handleBluetoothCommand(char command) {
+  switch (command) {
+    case '1':
+      turnRight();
+      moveForward();
+      shouldMoveForward = true;
+      break;
+    case '2':
+      turnLeft();
+      moveForward();
+      shouldMoveForward = true;
+      break;
+    case '3':
+      moveBackward();
+      shouldResumeCommands = true;
+      break;
+    case '4':
+      moveForward();
+      shouldResumeCommands = true;
+      break;
+    case '5':
+      stopCar();
+      shouldResumeCommands = false;
+      break;
+    // Add more commands as needed
+  }
+}
+
+// Function to move the car forward
+void moveForward() {
+  maneuver(200, 200, 500);
+}
+
+// Function to stop the car
+void stopCar() {
+  maneuver(0, 0, 250);
+  delay(500);
+}
+
+// Function to turn the car right
+void turnRight() {
+  maneuver(200, -200, 600);
+}
+
+// Function to make a slight right turn
+void turnSlightRight() {
+  maneuver(100, -100, 1000);
+}
+
+// Function to turn the car left
+void turnLeft() {
+  maneuver(-200, 200, 600);
+}
+
+// Function to make a slight left turn
+void turnSlightLeft() {
+  maneuver(100, -100, 1000);
+}
+
+// Function to move the car backward
+void moveBackward() {
+  maneuver(-200, -200, 600);
+}
+
+// Function to measure the time for a capacitor to discharge (light intensity measurement)
+long rcTime(int pin) {
+  pinMode(pin, OUTPUT);
+  digitalWrite(pin, HIGH);
+  delay(5);
+  pinMode(pin, INPUT);
+  digitalWrite(pin, LOW);
+  long time = micros();
+  while (digitalRead(pin));
+  time = micros() - time;
+  return time;
+}

@@ -1,0 +1,183 @@
+//Software Estella                                    
+#include <Servo.h>
+#include <SoftwareSerial.h>                                              
+
+Servo servoLeft;
+Servo servoRight;
+
+const int setpoint = 2;    // 세트포인트를 위한 출력 핀 (용도는 완전히 명확하지 않음)
+const int kpl = -50;        // 왼쪽 서보에 대한 비례 제어 이득
+const int kpr = -50;        // 오른쪽 서보에 대한 비례 제어 이득
+int speed = 0;              // 자동차의 속도를 나타내는 변수 (현재 사용되지 않음)
+
+const int threshold = 1;    // 장애물 감지를 위한 거리 임계값
+
+SoftwareSerial BT(5, 6);    // 소프트웨어 시리얼 통신 핀 (RX: 5, TX: 6)
+
+void setup() {
+  pinMode(10, INPUT);        // 핀 10을 입력으로 설정
+  pinMode(9, OUTPUT);        // 핀 9를 출력으로 설정
+  pinMode(3, INPUT);         // 핀 3을 입력으로 설정
+  pinMode(2, OUTPUT);        // 핀 2를 출력으로 설정
+  pinMode(8, OUTPUT);        // 핀 8을 출력으로 설정
+  pinMode(7, OUTPUT);        // 핀 7을 출력으로 설정
+  pinMode(setpoint, OUTPUT); // 세트포인트 핀을 출력으로 설정
+
+  servoLeft.attach(13);      // 왼쪽 서보를 핀 13에 연결
+  servoRight.attach(12);     // 오른쪽 서보를 핀 12에 연결
+
+  tone(4, 3000, 1000);       // 핀 4에서 1초 동안 소리를 생성
+  delay(1000);               // 1초 동안 대기
+
+  // 블루투스 설정
+  BT.begin(9600);            // 9600의 보레이트로 소프트웨어 시리얼 통신 시작
+  Serial.begin(9600);        // 9600의 보레이트로 시리얼 통신 시작
+}
+
+bool bluetoothCommandReceived = false;
+bool obstacleDetected = false; // 장애물 감지 플래그
+
+void loop() {
+  // 빛 센서 로직을 사용하여 자동차 시작
+  if (bluetoothCommandReceived) {
+    // 명령이 수신된 경우 명령을 실행하고 플래그를 재설정합니다
+    bluetoothCommandReceived = false;
+  } else {
+    // 명령이 수신되지 않으면 광 센서 로직을 진행합니다
+    float tLight = float(rcTime(11));   // 빛 강도 측정
+    float ndShade = (tLight / 1000) - 0.5; // 정규화된 빛 차이
+
+    // 빛 센서에 기반하여 시작 또는 정지
+    if (tLight < 2000) {
+      stopCar();
+    } else {
+      moveForward();
+    }
+  }
+
+  // 블루투스 명령 확인
+  if (BT.available()) {
+    char command = BT.read();
+    handleBluetoothCommand(command);
+  }
+
+  // 장애물 회피 로직
+  int irLeft = irDistance(9, 10);
+  int irRight = irDistance(2, 3);
+
+  digitalWrite(8, !irLeft);
+  digitalWrite(7, !irRight);
+
+  if (irLeft < threshold || irRight < threshold) {
+    stopCar();
+    tone(4, 3000, 1000);
+    delay(150);
+    digitalWrite(8, LOW);
+    digitalWrite(7, LOW);
+
+    obstacleDetected = true;  // 장애물이 감지되면 플래그를 true로 설정
+
+    // 블루투스 명령을 기다림
+    while (obstacleDetected) {
+      if (BT.available()) {
+        char command = BT.read();
+        handleBluetoothCommand(command);
+        obstacleDetected = false;  // 명령 처리 후 플래그를 재설정
+      }
+    }
+  }
+}
+
+// 적외선 거리를 측정하는 함수
+int irDistance(int irLedPin, int irReceivePin) {
+  int distance = 0;
+  for (long f = 39000; f <= 42000; f += 500) {
+    distance += irDetect(irLedPin, irReceivePin, f);
+  }
+  return distance;
+}
+
+// 특정 주파수에서 적외선 거리를 감지하는 함수
+int irDetect(int irLedPin, int irReceiverPin, long frequency) {
+  tone(irLedPin, frequency, 8);
+  delay(1);
+  int ir = digitalRead(irReceiverPin);
+  delay(1);
+  return ir;
+}
+
+// 서보 모터를 사용하여 기동을 수행하는 함수
+void maneuver(int speedLeft, int speedRight, int msTime) {
+  servoLeft.writeMicroseconds(1500 + speedLeft);
+  servoRight.writeMicroseconds(1500 - speedRight);
+  if (msTime == -1) {
+    servoLeft.detach();
+    servoRight.detach();
+  }
+  delay(msTime);
+}
+
+void handleBluetoothCommand(char command) {
+  bluetoothCommandReceived = true;  // 명령을 받았을 때 플래그 설정
+  switch (command) {
+    case '1':
+      moveForward();  // 차량을 즉시 정지시킵니다.
+      break;
+    case '2':
+      //delay(150);
+      turnRight();  // 우회전 명령을 수행합니다.
+      break;
+    case '3':
+      //delay(150);
+      turnLeft();  // 좌회전 명령을 수행합니다.
+      break;
+    case '4':
+      moveBackward();  // 차량을 즉시 후진시킵니다.
+      break;
+    case '5':
+      stopCar();  // 차량을 즉시 정지시킵니다.
+      break;
+  }
+}
+
+
+
+// 커패시터의 방전 시간을 측정하는 함수 (빛 강도 측정)
+long rcTime(int pin) {
+  pinMode(pin, OUTPUT);
+  digitalWrite(pin, HIGH);
+  delay(5);
+  pinMode(pin, INPUT);
+  digitalWrite(pin, LOW);
+  long time = micros();
+  while (digitalRead(pin));
+  time = micros() - time;
+  return time;
+}
+
+// 자동차를 전진시키는 함수
+void moveForward() {
+  maneuver(200, 200, 500);
+}
+
+// 자동차를 정지시키는 함수
+void stopCar() {
+  maneuver(0, 0, 250);
+  delay(150);
+}
+
+// 자동차를 우회전시키는 함수
+void turnRight() {
+  maneuver(200, -200, 500);
+}
+
+// 자동차를 좌회전시키는 함수
+void turnLeft() {
+  maneuver(-200, 200, 600);
+}
+
+// 자동차를 후진시키는 함수
+void moveBackward() {
+  delay(150);
+  maneuver(-200, -200, 600);
+}
